@@ -1,0 +1,91 @@
+---
+- name: Create the attendee lab project for VMs
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ cohesity_deploy_lab_ns }}"
+
+- name: Default VM disks to Filesystem mode so the Cohesity datamover can back them up
+  kubernetes.core.k8s:
+    state: patched
+    merge_type: merge
+    api_version: cdi.kubevirt.io/v1beta1
+    kind: StorageProfile
+    name: ocs-external-storagecluster-ceph-rbd
+    definition:
+      spec:
+        claimPropertySets:
+          - accessModes: ["ReadWriteOnce"]
+            volumeMode: Filesystem
+
+- name: Make cephfs the default StorageClass (RWX needed for restore)
+  kubernetes.core.k8s:
+    state: patched
+    merge_type: merge
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: ocs-external-storagecluster-cephfs
+    definition:
+      metadata:
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "true"
+
+- name: Unset ceph-rbd as the default StorageClass
+  kubernetes.core.k8s:
+    state: patched
+    merge_type: merge
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: ocs-external-storagecluster-ceph-rbd
+    definition:
+      metadata:
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "false"
+
+- name: Find all VolumeSnapshotClasses
+  kubernetes.core.k8s_info:
+    api_version: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotClass
+  register: vsc_list
+
+- name: Label VolumeSnapshotClasses so Velero selects them for CSI snapshots
+  kubernetes.core.k8s:
+    state: patched
+    merge_type: merge
+    api_version: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotClass
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        labels:
+          velero.io/csi-volumesnapshot-class: "true"
+  loop: "{{ vsc_list.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Deploy the cohesity-fixer reconciler that applies post-registration fixes
+  kubernetes.core.k8s:
+    state: present
+    template: templates/cohesity-fixer.j2
+
+- name: Get the Cohesity registration token
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: cohesity-token
+    namespace: default
+  register: cohesity_token_secret
+  until: cohesity_token_secret.resources | length > 0 and cohesity_token_secret.resources[0].data.token is defined
+  retries: 10
+  delay: 6
+
+- name: Print the Cohesity route
+  ansible.builtin.debug:
+    var: cohesity_route.resources[0].spec.host
+
+- name: Print the Cohesity registration token
+  ansible.builtin.debug:
+    msg: "{{ cohesity_token_secret.resources[0].data.token | b64decode }}"

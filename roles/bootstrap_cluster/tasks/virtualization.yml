@@ -1,0 +1,41 @@
+---
+- name: Subscribe the OpenShift Virtualization operator
+  kubernetes.core.k8s:
+    state: present
+    template: templates/openshift-virt-operator.j2
+
+- name: Wait for the OpenShift Virtualization operator to reach Succeeded
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    namespace: openshift-cnv
+    label_selectors:
+      - operators.coreos.com/kubevirt-hyperconverged.openshift-cnv
+  register: cnv_csv
+  until:
+    - cnv_csv.resources is defined
+    - cnv_csv.resources | length > 0
+    - cnv_csv.resources[0].status.phase == "Succeeded"
+  retries: 50
+  delay: 20
+
+- name: Create the HyperConverged deployment
+  kubernetes.core.k8s:
+    state: present
+    template: templates/openshift-hco.j2
+
+- name: Wait for HyperConverged to report Available
+  kubernetes.core.k8s_info:
+    api_version: hco.kubevirt.io/v1beta1
+    kind: HyperConverged
+    name: kubevirt-hyperconverged
+    namespace: openshift-cnv
+  register: r_hyperconverged
+  until:
+    - r_hyperconverged.resources | length > 0
+    - r_hyperconverged.resources[0].status.conditions is defined
+    - r_hyperconverged.resources[0].status.conditions |
+        selectattr('type', 'equalto', 'Available') |
+        selectattr('status', 'equalto', 'True') | list | length > 0
+  retries: 60
+  delay: 30

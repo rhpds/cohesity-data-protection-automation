@@ -1,0 +1,10 @@
+namespace: rhpds
+name: cohesity_data_protection
+version: 1.0.0
+readme: README.md
+authors:
+  - RHPDS
+description: Cohesity Data Protection automation collection
+license:
+  - Apache-2.0
+repository: https://github.com/rhpds/cohesity-data-protection-automation

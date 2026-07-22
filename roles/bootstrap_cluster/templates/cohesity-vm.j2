@@ -1,0 +1,39 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: cohesity-ve1
+  namespace: cohesity-ve
+spec:
+  running: true
+  template:
+    spec:
+      domain:
+        cpu:
+          cores: 8
+        resources:
+          requests:
+            memory: 32Gi
+        devices:
+          disks:
+            - name: rootdisk
+              disk: { bus: virtio }
+            - name: metadisk
+              disk: { bus: scsi }
+            - name: datadisk
+              disk: { bus: scsi }
+          interfaces:
+            - name: default
+              masquerade: {}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: rhov-test-dv1
+        - name: metadisk
+          persistentVolumeClaim:
+            claimName: vm1-meta
+        - name: datadisk
+          persistentVolumeClaim:
+            claimName: vm1-data

@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ cohesity_deploy_golden_ns }}
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: {{ cohesity_deploy_golden_dv }}
+  namespace: {{ cohesity_deploy_golden_ns }}
+  annotations:
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+    # keep the DV object after import so re-applying is a no-op, not a re-download
+    cdi.kubevirt.io/storage.deleteAfterCompletion: "false"
+spec:
+  source:
+    http:
+      url: "{{ cohesity_deploy_image_url }}"
+  storage:
+    resources:
+      requests:
+        storage: 300Gi
+    storageClassName: ocs-external-storagecluster-ceph-rbd
+    accessModes:
+      - ReadWriteOnce
+    volumeMode: Filesystem

@@ -1,0 +1,12 @@
+---
+- name: Install OpenShift Virtualization
+  ansible.builtin.import_tasks: virtualization.yml
+
+- name: Deploy the Cohesity VE appliance VM
+  ansible.builtin.import_tasks: appliance.yml
+
+- name: Initialize the Cohesity cluster on the appliance
+  ansible.builtin.import_tasks: cohesity-init.yml
+
+- name: Prepare the cluster for Cohesity backups
+  ansible.builtin.import_tasks: backup-integration.yml

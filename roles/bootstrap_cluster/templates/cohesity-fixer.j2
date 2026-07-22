@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cohesity-fixer
+  namespace: cohesity-ve
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cohesity-fixer
+rules:
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["oadp.openshift.io"]
+    resources: ["dataprotectionapplications"]
+    verbs: ["get", "list", "patch"]
+  # recreate the VolumeSnapshot that Cohesity restores omit
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["get", "list"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cohesity-fixer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cohesity-fixer
+subjects:
+  - kind: ServiceAccount
+    name: cohesity-fixer
+    namespace: cohesity-ve
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cohesity-fixer
+  namespace: cohesity-ve
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cohesity-fixer
+  template:
+    metadata:
+      labels:
+        app: cohesity-fixer
+    spec:
+      serviceAccountName: cohesity-fixer
+      containers:
+        - name: fixer
+          image: registry.redhat.io/ubi9/python-39:latest
+          command:
+            - python3
+            - -u
+            - -c
+            - |
+              import json, ssl, time, urllib.request, urllib.error
+
+              API = "https://kubernetes.default.svc"
+              SA = "/var/run/secrets/kubernetes.io/serviceaccount"
+              CTX = ssl.create_default_context(cafile=SA + "/ca.crt")
+
+              def req(path, method="GET", body=None, ctype="application/json"):
+                  tok = open(SA + "/token").read()
+                  r = urllib.request.Request(API + path, method=method,
+                      data=json.dumps(body).encode() if body is not None else None)
+                  r.add_header("Authorization", "Bearer " + tok)
+                  if body is not None:
+                      r.add_header("Content-Type", ctype)
+                  try:
+                      with urllib.request.urlopen(r, context=CTX, timeout=10) as resp:
+                          return json.load(resp)
+                  except urllib.error.HTTPError as e:
+                      if e.code != 404:
+                          print(method, path, "->", e.code, flush=True)
+                      return None
+                  except Exception as e:
+                      print(method, path, "->", e, flush=True)
+                      return None
+
+              import re
+              def fix_orphaned_snapshots():
+                  # Cohesity same-cluster restores restore the (cluster-scoped)
+                  # VolumeSnapshotContent but exclude the namespaced
+                  # VolumeSnapshot, deadlocking the restored PVC forever
+                  # ("error getting snapshot ... not found"). Recreate the
+                  # missing VS for Cohesity-named (64-hex) ready VSCs.
+                  vscs = req("/apis/snapshot.storage.k8s.io/v1/volumesnapshotcontents") or {}
+                  for c in vscs.get("items") or []:
+                      name = c["metadata"]["name"]
+                      if not re.fullmatch(r"[0-9a-f]{64}", name):
+                          continue
+                      if not (c.get("status") or {}).get("readyToUse"):
+                          continue
+                      ref = (c.get("spec") or {}).get("volumeSnapshotRef") or {}
+                      if ref.get("uid") or not ref.get("name") or not ref.get("namespace"):
+                          continue
+                      ns, vs = ref["namespace"], ref["name"]
+                      if req(f"/apis/snapshot.storage.k8s.io/v1/namespaces/{ns}/volumesnapshots/{vs}"):
+                          continue
+                      # only act on the actual deadlock: a Pending PVC in that
+                      # namespace waiting to provision from this missing VS
+                      pvcs = req(f"/api/v1/namespaces/{ns}/persistentvolumeclaims") or {}
+                      if not any(((p.get("spec") or {}).get("dataSource") or {}).get("name") == vs
+                                 and (p.get("status") or {}).get("phase") == "Pending"
+                                 for p in pvcs.get("items") or []):
+                          continue
+                      body = {"apiVersion": "snapshot.storage.k8s.io/v1",
+                              "kind": "VolumeSnapshot",
+                              "metadata": {"name": vs, "namespace": ns},
+                              "spec": {"source": {"volumeSnapshotContentName": name},
+                                       "volumeSnapshotClassName": (c.get("spec") or {}).get("volumeSnapshotClassName")}}
+                      if req(f"/apis/snapshot.storage.k8s.io/v1/namespaces/{ns}/volumesnapshots", "POST", body):
+                          print("volumesnapshot ->", ns, vs)
+
+              while True:
+                  fix_orphaned_snapshots()
+                  ds = req("/apis/apps/v1/daemonsets?fieldSelector=metadata.name%3Dcohesity-dm") or {}
+                  for item in ds.get("items") or []:
+                      ns = item["metadata"]["namespace"]
+                      dpas = req(f"/apis/oadp.openshift.io/v1alpha1/namespaces/{ns}/dataprotectionapplications") or {}
+                      for d in dpas.get("items") or []:
+                          plugins = (((d.get("spec") or {}).get("configuration") or {}).get("velero") or {}).get("defaultPlugins") or []
+                          if "csi" not in plugins:
+                              name = d["metadata"]["name"]
+                              if req(f"/apis/oadp.openshift.io/v1alpha1/namespaces/{ns}/dataprotectionapplications/{name}",
+                                     "PATCH", {"spec": {"configuration": {"velero": {"defaultPlugins": plugins + ["csi"]}}}},
+                                     "application/merge-patch+json"):
+                                  print("csi ->", ns, name)
+                  time.sleep(20)
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

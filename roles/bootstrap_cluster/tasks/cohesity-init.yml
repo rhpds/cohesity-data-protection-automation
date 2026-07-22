@@ -1,0 +1,231 @@
+---
+- name: Create the service account, admin binding, and token Cohesity uses to register the cluster
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ item }}"
+  loop:
+    - apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: cohesity
+        namespace: default
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: cohesity-admin
+      subjects:
+        - kind: ServiceAccount
+          name: cohesity
+          namespace: default
+      roleRef:
+        kind: ClusterRole
+        name: cluster-admin
+        apiGroup: rbac.authorization.k8s.io
+    - apiVersion: v1
+      kind: Secret
+      metadata:
+        name: cohesity-token
+        namespace: default
+        annotations:
+          kubernetes.io/service-account.name: cohesity
+      type: kubernetes.io/service-account-token
+  loop_control:
+    label: "{{ item.kind }}"
+
+- name: Find the cluster's virtctl download route
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    name: hyperconverged-cluster-cli-download
+    namespace: openshift-cnv
+  register: virtctl_route
+
+- name: Download and unpack the cluster-matched virtctl
+  ansible.builtin.unarchive:
+    src: "https://{{ virtctl_route.resources[0].spec.host }}/amd64/linux/virtctl.tar.gz"
+    dest: /tmp
+    remote_src: true
+    validate_certs: false
+  register: virtctl_fetch
+  until: virtctl_fetch is succeeded
+  retries: 3
+  delay: 10
+
+- name: Ensure virtctl is executable
+  ansible.builtin.file:
+    path: /tmp/virtctl
+    mode: "0755"
+
+- name: Check whether the Cohesity cluster was already created (re-run guard)
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: cohesity-cluster-initialized
+    namespace: cohesity-ve
+  register: init_marker
+
+- name: Note whether one-shot initialization must be skipped
+  ansible.builtin.set_fact:
+    cohesity_initialized: "{{ init_marker.resources | length > 0 }}"
+
+- name: Bring up the appliance guest network over the serial console
+  ansible.builtin.command:
+    cmd: python3 {{ role_path }}/files/fix_boot_network.py
+  environment:
+    VIRTCTL: /tmp/virtctl
+    KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') + '/.kube/config', true) }}"
+    COHESITY_VM: cohesity-ve1
+    COHESITY_NAMESPACE: cohesity-ve
+    COHESITY_USER: cohesity
+    COHESITY_PASSWORD: "Cohe$1ty"
+  when:
+    - not ansible_check_mode
+    - not cohesity_initialized
+  register: netfix
+  changed_when: true
+  retries: 3
+  delay: 20
+  until: netfix.rc == 0
+
+- name: Create the appliance SSH service
+  kubernetes.core.k8s:
+    state: present
+    template: templates/cohesity-ssh-svc.j2
+
+- name: Create the lab-ve-cluster S3 service that tracks the appliance pod IP
+  kubernetes.core.k8s:
+    state: present
+    template: templates/lab-ve-cluster-svc.j2
+
+- name: Create the Cohesity web UI service
+  kubernetes.core.k8s:
+    state: present
+    template: templates/cohesity-web-svc.j2
+
+- name: Create the Cohesity web UI route
+  kubernetes.core.k8s:
+    state: present
+    template: templates/cohesity-route.j2
+
+- name: Wait for the web UI route to be admitted
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    name: cohesity-web
+    namespace: cohesity-ve
+  register: cohesity_route
+  until:
+    - cohesity_route.resources | length > 0
+    - cohesity_route.resources[0].spec.host is defined
+  retries: 10
+  delay: 6
+
+- name: Wait for the appliance HTTPS API to answer on the route
+  ansible.builtin.uri:
+    url: "https://{{ cohesity_route.resources[0].spec.host }}"
+    validate_certs: false
+    status_code: [200, 301, 302, 401, 403]
+  check_mode: false
+  register: iris_svc_check
+  until: iris_svc_check.status is defined and iris_svc_check.status in [200, 301, 302, 401, 403]
+  retries: 60
+  delay: 30
+
+- name: Run the one-shot cluster initialization
+  when: not cohesity_initialized
+  block:
+    - name: Copy the cluster-create script to the appliance
+      ansible.builtin.expect:
+        command: >
+          /tmp/virtctl scp
+          -n cohesity-ve
+          -t "-o StrictHostKeyChecking=no"
+          -t "-o UserKnownHostsFile=/dev/null"
+          -t "-o PasswordAuthentication=yes"
+          -t "-o PubkeyAuthentication=no"
+          {{ role_path }}/files/iris_cli_init.py
+          cohesity@vm/cohesity-ve1:/tmp/iris_cli_init.py
+        responses:
+          "[Pp]assword:": "Cohe$1ty"
+        timeout: 60
+      environment:
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') + '/.kube/config', true) }}"
+
+    - name: Create the Cohesity cluster with iris_cli (one-shot, rotates appliance credentials)
+      ansible.builtin.expect:
+        command: >
+          /tmp/virtctl ssh
+          -n cohesity-ve
+          -t "-o StrictHostKeyChecking=no"
+          -t "-o UserKnownHostsFile=/dev/null"
+          -t "-o PasswordAuthentication=yes"
+          -t "-o PubkeyAuthentication=no"
+          cohesity@vm/cohesity-ve1
+          -c "python3 /tmp/iris_cli_init.py"
+        responses:
+          "[Pp]assword:": "Cohe$1ty"
+        timeout: 900
+      environment:
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') + '/.kube/config', true) }}"
+      register: iris_result
+  rescue:
+    # ponytail: no auto-recovery here — the appliance password may have
+    # rotated mid-script, so a re-run's default password is a guess. Leave a
+    # clear marker + fail loudly instead of retry-looping on a stale password.
+    - name: Record that init failed and credentials may have rotated
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: cohesity-cluster-init-failed
+            namespace: cohesity-ve
+          data:
+            message: >-
+              iris_cli init failed after the appliance password may have
+              rotated. Re-running with the default password will likely fail.
+              Verify the appliance credentials manually (or redeploy the VM)
+              before retrying.
+
+    - name: Fail with recovery guidance
+      ansible.builtin.fail:
+        msg: >-
+          Cohesity cluster initialization failed; appliance credentials may
+          have rotated mid-script. See the cohesity-cluster-init-failed
+          ConfigMap in cohesity-ve. Manual recovery required before re-running.
+
+- name: Record cluster creation so re-runs and Argo re-syncs skip one-shot init
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: cohesity-cluster-initialized
+        namespace: cohesity-ve
+      data:
+        initialized: "true"
+  when:
+    - not ansible_check_mode
+    - not cohesity_initialized
+
+- name: Show the cluster-create output
+  ansible.builtin.debug:
+    var: iris_result.stdout
+  when: not cohesity_initialized
+
+- name: Wait for the Cohesity web UI to come back after cluster create
+  ansible.builtin.uri:
+    url: "https://{{ cohesity_route.resources[0].spec.host }}"
+    validate_certs: false
+    status_code: [200, 301, 302, 403]
+  check_mode: false
+  register: ui_check
+  until: ui_check.status is defined and ui_check.status in [200, 301, 302, 403]
+  retries: 60
+  delay: 30
+
+- name: Print the Cohesity web UI URL
+  ansible.builtin.debug:
+    msg: "https://{{ cohesity_route.resources[0].spec.host }}"

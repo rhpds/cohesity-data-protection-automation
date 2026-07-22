@@ -1,0 +1,65 @@
+---
+- name: Create the Cohesity namespace
+  kubernetes.core.k8s:
+    state: present
+    template: templates/cohesity-namespace.j2
+
+- name: Import the Cohesity VE image once into the golden namespace
+  kubernetes.core.k8s:
+    state: present
+    template: templates/cohesity-golden-dv.j2
+
+- name: Wait for the golden image import to complete
+  kubernetes.core.k8s_info:
+    api_version: cdi.kubevirt.io/v1beta1
+    kind: DataVolume
+    name: "{{ cohesity_deploy_golden_dv }}"
+    namespace: "{{ cohesity_deploy_golden_ns }}"
+  register: golden_dv_status
+  until:
+    - golden_dv_status.resources | length > 0
+    - golden_dv_status.resources[0].status.phase is defined
+    - golden_dv_status.resources[0].status.phase == "Succeeded"
+  retries: 120
+  delay: 30
+
+- name: Clone the golden image into the appliance boot disk
+  kubernetes.core.k8s:
+    state: present
+    template: templates/cohesity-boot-dv.j2
+
+- name: Create the appliance data and metadata disks
+  kubernetes.core.k8s:
+    state: present
+    template: templates/cohesity-vm-disks.j2
+
+- name: Wait for the boot disk clone to complete
+  kubernetes.core.k8s_info:
+    api_version: cdi.kubevirt.io/v1beta1
+    kind: DataVolume
+    name: rhov-test-dv1
+    namespace: cohesity-ve
+  register: dv_status
+  until:
+    - dv_status.resources | length > 0
+    - dv_status.resources[0].status.phase is defined
+    - dv_status.resources[0].status.phase == "Succeeded"
+  retries: 120
+  delay: 30
+
+- name: Launch the Cohesity VE virtual machine
+  kubernetes.core.k8s:
+    state: present
+    template: templates/cohesity-vm.j2
+
+- name: Wait for the Cohesity VE virtual machine to be Running
+  kubernetes.core.k8s_info:
+    kind: VirtualMachine
+    name: cohesity-ve1
+    namespace: cohesity-ve
+  register: vm_status
+  until:
+    - vm_status.resources | length > 0
+    - vm_status.resources[0].status.printableStatus | default("") == "Running"
+  retries: 120
+  delay: 30

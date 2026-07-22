@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cohesity-web-ui
+  namespace: cohesity-ve
+spec:
+  selector:
+    vm.kubevirt.io/name: cohesity-ve1
+  ports:
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 443

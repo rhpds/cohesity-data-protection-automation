@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-cnv
+  labels:
+    openshift.io/cluster-monitoring: "true"
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: kubevirt-hyperconverged-group
+  namespace: openshift-cnv
+spec:
+  targetNamespaces:
+    - openshift-cnv
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: hco-operatorhub
+  namespace: openshift-cnv
+spec:
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  name: kubevirt-hyperconverged
+  channel: "stable"
+  installPlanApproval: Automatic
+  # No startingCSV pin: the catalog rolls forward (e.g. v4.20.8 was pulled and
+  # replaced by v4.20.15/.18), so a hard pin breaks the install on any cluster
+  # whose catalog has advanced. Track the channel's current CSV instead; the
+  # version-agnostic "wait for CSV Succeeded" task in tasks/main.yml handles it.

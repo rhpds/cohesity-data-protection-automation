@@ -1,0 +1,10 @@
+*.tar.gz
+*.retry
+*.pyc
+__pycache__/
+*.egg-info/
+.venv/
+venv/
+.tox/
+.cache/
+.pytest_cache/

@@ -1,0 +1,20 @@
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: rhov-test-dv1
+  namespace: cohesity-ve
+  annotations:
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+spec:
+  source:
+    pvc:
+      namespace: {{ cohesity_deploy_golden_ns }}
+      name: {{ cohesity_deploy_golden_dv }}
+  storage:
+    resources:
+      requests:
+        storage: 300Gi
+    storageClassName: ocs-external-storagecluster-ceph-rbd
+    accessModes:
+      - ReadWriteOnce
+    volumeMode: Filesystem
