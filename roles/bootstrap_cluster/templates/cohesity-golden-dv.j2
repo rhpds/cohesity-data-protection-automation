@@ -3,6 +3,16 @@ kind: Namespace
 metadata:
   name: {{ cohesity_deploy_golden_ns }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cohesity-s3-credentials
+  namespace: {{ cohesity_deploy_golden_ns }}
+type: Opaque
+stringData:
+  accessKeyId: "{{ cohesity_kvm_access_key_id }}"
+  secretKey: "{{ cohesity_kvm_secret_access_key }}"
+---
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:
@@ -10,12 +20,12 @@ metadata:
   namespace: {{ cohesity_deploy_golden_ns }}
   annotations:
     cdi.kubevirt.io/storage.bind.immediate.requested: "true"
-    # keep the DV object after import so re-applying is a no-op, not a re-download
     cdi.kubevirt.io/storage.deleteAfterCompletion: "false"
 spec:
   source:
-    http:
+    s3:
       url: "{{ cohesity_deploy_image_url }}"
+      secretRef: cohesity-s3-credentials
   storage:
     resources:
       requests:
