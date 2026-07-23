@@ -1,6 +1,6 @@
 ---
-- name: Install OpenShift Virtualization
-  ansible.builtin.import_tasks: virtualization.yml
+# - name: Install OpenShift Virtualization
+#   ansible.builtin.import_tasks: virtualization.yml
 
 - name: Deploy the Cohesity VE appliance VM
   ansible.builtin.import_tasks: appliance.yml
