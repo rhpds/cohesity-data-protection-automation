@@ -68,6 +68,11 @@
   ansible.builtin.set_fact:
     cohesity_initialized: "{{ init_marker.resources | length > 0 }}"
 
+- name: Ensure pexpect is installed
+  ansible.builtin.pip:
+    name: pexpect
+    state: present
+
 - name: Bring up the appliance guest network over the serial console
   ansible.builtin.command:
     cmd: python3 {{ role_path }}/files/fix_boot_network.py
