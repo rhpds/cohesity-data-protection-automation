@@ -75,7 +75,12 @@
 
 - name: Bring up the appliance guest network over the serial console
   ansible.builtin.command:
-    cmd: python3 {{ role_path }}/files/fix_boot_network.py
+    # A bare "python3" resolves via the OS PATH, not via Ansible's interpreter
+    # discovery -- on ee-multicloud that's /usr/bin/python3 (system Python 3.9,
+    # no pexpect), a different interpreter than the one the "Ensure pexpect is
+    # installed" pip task above targets (ansible_playbook_python, 3.12). Use the
+    # same interpreter ansible-playbook itself runs under so pexpect is found.
+    cmd: "{{ ansible_playbook_python }} {{ role_path }}/files/fix_boot_network.py"
   environment:
     VIRTCTL: /tmp/virtctl
     KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') + '/.kube/config', true) }}"
