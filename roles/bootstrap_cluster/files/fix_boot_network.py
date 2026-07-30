@@ -95,9 +95,11 @@ def login(child, attempts=40):
     for _ in range(attempts):
         child.sendline("")
         idx = child.expect(
-            [r"login:", PROMPT, r"[Pp]assword:", pexpect.TIMEOUT], timeout=10
+            [r"login:", PROMPT, r"[Pp]assword:", r"[Uu]sername:",
+             pexpect.EOF, pexpect.TIMEOUT],
+            timeout=10,
         )
-        if idx == 0:  # login prompt
+        if idx in (0, 3):  # Linux "login:" or Cohesity "Username:"
             child.sendline(USER)
             if child.expect([r"[Pp]assword:", pexpect.TIMEOUT], timeout=10) == 0:
                 child.sendline(PASSWORD)
@@ -109,6 +111,8 @@ def login(child, attempts=40):
             child.sendline(PASSWORD)
             if child.expect([PROMPT, pexpect.TIMEOUT], timeout=15) == 0:
                 return True
+        elif idx == 4:  # EOF — virtctl crashed or disconnected
+            return False
         # TIMEOUT -> still booting; loop and nudge again
     return False
 
