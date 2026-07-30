@@ -32,6 +32,33 @@
   loop_control:
     label: "{{ item.kind }}"
 
+- name: Write kubeconfig for virtctl CLI tools
+  ansible.builtin.copy:
+    # The kubernetes.core modules authenticate via module_defaults (host + api_key)
+    # set by the agnosticd deployer, but virtctl is a standalone Go binary that
+    # needs a kubeconfig file. Generate one from the same cluster credentials.
+    content: |
+      apiVersion: v1
+      kind: Config
+      clusters:
+      - cluster:
+          server: "{{ openshift_api_url }}"
+          insecure-skip-tls-verify: true
+        name: cluster
+      contexts:
+      - context:
+          cluster: cluster
+          user: admin
+        name: default
+      current-context: default
+      users:
+      - name: admin
+        user:
+          token: "{{ openshift_cluster_admin_token }}"
+    dest: /tmp/virtctl-kubeconfig
+    mode: "0600"
+  no_log: true
+
 - name: Find the cluster's virtctl download route
   kubernetes.core.k8s_info:
     api_version: route.openshift.io/v1
@@ -83,7 +110,7 @@
     cmd: "{{ ansible_playbook_python }} {{ role_path }}/files/fix_boot_network.py"
   environment:
     VIRTCTL: /tmp/virtctl
-    KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') + '/.kube/config', true) }}"
+    KUBECONFIG: /tmp/virtctl-kubeconfig
     COHESITY_VM: cohesity-ve1
     COHESITY_NAMESPACE: cohesity-ve
     COHESITY_USER: cohesity
@@ -159,7 +186,7 @@
           "[Pp]assword:": "Cohe$1ty"
         timeout: 60
       environment:
-        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') + '/.kube/config', true) }}"
+        KUBECONFIG: /tmp/virtctl-kubeconfig
 
     - name: Create the Cohesity cluster with iris_cli (one-shot, rotates appliance credentials)
       ansible.builtin.expect:
@@ -176,7 +203,7 @@
           "[Pp]assword:": "Cohe$1ty"
         timeout: 900
       environment:
-        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') + '/.kube/config', true) }}"
+        KUBECONFIG: /tmp/virtctl-kubeconfig
       register: iris_result
   rescue:
     # ponytail: no auto-recovery here — the appliance password may have
