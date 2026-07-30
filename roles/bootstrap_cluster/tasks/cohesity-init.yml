@@ -54,7 +54,7 @@
       users:
       - name: admin
         user:
-          token: "{{ openshift_cluster_admin_token }}"
+          token: "{{ openshift_api_key }}"
     dest: /tmp/virtctl-kubeconfig
     mode: "0600"
   no_log: true
