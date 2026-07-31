@@ -162,10 +162,10 @@ def main():
         "M=$(sudo grep -A2 '\\[ethernet\\]' "
         "/etc/NetworkManager/system-connections/%s.nmconnection "
         "| grep -m1 mtu | cut -d= -f2); "
-        "echo NETFIX LEASE=$L ROUTE=$R KEYMTU=$M" % (BOND, BOND, BOND)
+        "echo NETFIX LEASE=$L ROUTE=$R KEYMTU=$M DONE" % (BOND, BOND, BOND)
     )
     idx = child.expect(
-        [r"NETFIX LEASE=([0-9]+) ROUTE=([0-9]+) KEYMTU=([0-9]+)",
+        [r"NETFIX LEASE=([0-9]+) ROUTE=([0-9]+) KEYMTU=([0-9]+) DONE",
          pexpect.TIMEOUT],
         timeout=30,
     )
